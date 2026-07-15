@@ -6,11 +6,8 @@ import streamlit as st
 
 from src.data_cleaning import create_earthquake_dataframe
 from src.earthquake_api import fetch_earthquake_data
+from src.statistics import calculate_summary_statistics
 
-
-# ---------------------------------------------------------
-# Page configuration
-# ---------------------------------------------------------
 
 st.set_page_config(
     page_title="Earthquake Intelligence Dashboard",
@@ -19,89 +16,19 @@ st.set_page_config(
 )
 
 
-# ---------------------------------------------------------
-# Load earthquake data
-# ---------------------------------------------------------
-
 @st.cache_data(ttl=300)
 def load_earthquake_data() -> pd.DataFrame:
     """
-    Retrieve live earthquake data from USGS and convert it
-    into a cleaned pandas DataFrame.
+    Retrieve live earthquake data from USGS and return a clean DataFrame.
     """
     earthquake_data = fetch_earthquake_data()
     return create_earthquake_dataframe(earthquake_data)
 
 
-# ---------------------------------------------------------
-# Dashboard title
-# ---------------------------------------------------------
-
-st.title("🌍 Global Earthquake Intelligence Dashboard")
-
-st.caption(
-    "Live global earthquake activity from the "
-    "USGS past-day earthquake feed."
-)
-
-
-# ---------------------------------------------------------
-# Retrieve data
-# ---------------------------------------------------------
-
-try:
-    earthquake_dataframe = load_earthquake_data()
-
-except Exception as error:
-    st.error(f"Unable to retrieve earthquake data: {error}")
-    st.stop()
-
-
-if earthquake_dataframe.empty:
-    st.warning("No earthquake records are currently available.")
-    st.stop()
-
-
-# ---------------------------------------------------------
-# Make sure required columns are valid
-# ---------------------------------------------------------
-
-numeric_columns = [
-    "magnitude",
-    "depth_km",
-    "latitude",
-    "longitude",
-]
-
-for column in numeric_columns:
-    earthquake_dataframe[column] = pd.to_numeric(
-        earthquake_dataframe[column],
-        errors="coerce",
-    )
-
-
-earthquake_dataframe = earthquake_dataframe.dropna(
-    subset=[
-        "magnitude",
-        "depth_km",
-        "latitude",
-        "longitude",
-    ]
-).copy()
-
-
-if earthquake_dataframe.empty:
-    st.warning("No valid earthquake coordinates are available.")
-    st.stop()
-
-
-# ---------------------------------------------------------
-# Add severity if it is not already present
-# ---------------------------------------------------------
-
 def classify_magnitude(magnitude: float) -> str:
-    """Return a readable earthquake severity category."""
-
+    """
+    Return a readable severity category for an earthquake magnitude.
+    """
     if pd.isna(magnitude):
         return "Unknown"
 
@@ -126,6 +53,51 @@ def classify_magnitude(magnitude: float) -> str:
     return "Great"
 
 
+st.title("🌍 Global Earthquake Intelligence Dashboard")
+
+st.caption(
+    "Live global earthquake activity from the USGS past-day feed."
+)
+
+
+try:
+    earthquake_dataframe = load_earthquake_data()
+
+except Exception as error:
+    st.error(f"Unable to retrieve earthquake data: {error}")
+    st.stop()
+
+
+if earthquake_dataframe.empty:
+    st.warning("No earthquake records are currently available.")
+    st.stop()
+
+
+required_numeric_columns = [
+    "magnitude",
+    "depth_km",
+    "latitude",
+    "longitude",
+]
+
+
+for column in required_numeric_columns:
+    earthquake_dataframe[column] = pd.to_numeric(
+        earthquake_dataframe[column],
+        errors="coerce",
+    )
+
+
+earthquake_dataframe = earthquake_dataframe.dropna(
+    subset=required_numeric_columns
+).copy()
+
+
+if earthquake_dataframe.empty:
+    st.warning("No valid earthquake records are available.")
+    st.stop()
+
+
 if "severity" not in earthquake_dataframe.columns:
     earthquake_dataframe["severity"] = (
         earthquake_dataframe["magnitude"].apply(
@@ -134,9 +106,12 @@ if "severity" not in earthquake_dataframe.columns:
     )
 
 
-# ---------------------------------------------------------
-# Sidebar filters
-# ---------------------------------------------------------
+earthquake_dataframe["event_time"] = pd.to_datetime(
+    earthquake_dataframe["event_time"],
+    utc=True,
+    errors="coerce",
+)
+
 
 st.sidebar.header("Dashboard Filters")
 
@@ -183,7 +158,7 @@ selected_depth_range = st.sidebar.slider(
 )
 
 
-severity_options = [
+severity_order = [
     "Micro",
     "Minor",
     "Light",
@@ -197,7 +172,7 @@ severity_options = [
 
 available_severities = [
     severity
-    for severity in severity_options
+    for severity in severity_order
     if severity in earthquake_dataframe["severity"].unique()
 ]
 
@@ -219,10 +194,6 @@ if st.sidebar.button("Refresh earthquake data"):
     st.cache_data.clear()
     st.rerun()
 
-
-# ---------------------------------------------------------
-# Apply filters
-# ---------------------------------------------------------
 
 filtered_dataframe = earthquake_dataframe[
     earthquake_dataframe["magnitude"].between(
@@ -251,37 +222,30 @@ if search_location:
     ]
 
 
-# ---------------------------------------------------------
-# Summary metrics
-# ---------------------------------------------------------
-
-total_earthquakes = len(filtered_dataframe)
+summary_statistics = calculate_summary_statistics(
+    filtered_dataframe
+)
 
 
-if filtered_dataframe.empty:
-    largest_magnitude = 0.0
-    average_magnitude = 0.0
-    average_depth = 0.0
-    tsunami_alerts = 0
+total_earthquakes = summary_statistics[
+    "total_earthquakes"
+]
 
-else:
-    largest_magnitude = (
-        filtered_dataframe["magnitude"].max()
-    )
+largest_magnitude = summary_statistics[
+    "largest_magnitude"
+]
 
-    average_magnitude = (
-        filtered_dataframe["magnitude"].mean()
-    )
+average_magnitude = summary_statistics[
+    "average_magnitude"
+]
 
-    average_depth = (
-        filtered_dataframe["depth_km"].mean()
-    )
+average_depth = summary_statistics[
+    "average_depth"
+]
 
-    tsunami_alerts = int(
-        filtered_dataframe["tsunami_alert"]
-        .fillna(0)
-        .sum()
-    )
+tsunami_alerts = summary_statistics[
+    "tsunami_alerts"
+]
 
 
 metric_column_1, metric_column_2, metric_column_3, metric_column_4 = (
@@ -313,6 +277,11 @@ metric_column_4.metric(
 )
 
 
+st.caption(
+    f"Tsunami alerts in the filtered dataset: {tsunami_alerts}"
+)
+
+
 st.divider()
 
 
@@ -323,10 +292,6 @@ if filtered_dataframe.empty:
     st.stop()
 
 
-# ---------------------------------------------------------
-# Dashboard tabs
-# ---------------------------------------------------------
-
 map_tab, analysis_tab, records_tab = st.tabs(
     [
         "🌍 Earthquake Map",
@@ -336,22 +301,14 @@ map_tab, analysis_tab, records_tab = st.tabs(
 )
 
 
-# ---------------------------------------------------------
-# Map tab
-# ---------------------------------------------------------
-
 with map_tab:
-
     st.subheader("Interactive Earthquake Map")
 
     map_dataframe = filtered_dataframe.copy()
 
-    # Plotly marker sizes must be positive.
     map_dataframe["marker_size"] = (
-        map_dataframe["magnitude"]
-        .clip(lower=0.1)
+        map_dataframe["magnitude"].clip(lower=0.1)
     )
-
 
     map_figure = px.scatter_mapbox(
         map_dataframe,
@@ -372,10 +329,9 @@ with map_tab:
         zoom=1,
         height=650,
         category_orders={
-            "severity": severity_options
+            "severity": severity_order
         },
     )
-
 
     map_figure.update_layout(
         mapbox_style="carto-positron",
@@ -388,47 +344,26 @@ with map_tab:
         legend_title_text="Severity",
     )
 
-
     st.plotly_chart(
         map_figure,
         use_container_width=True,
     )
 
-
     st.info(
-        "Larger markers represent stronger earthquakes. "
-        "Use the sidebar to filter the map."
+        "Larger markers represent stronger earthquakes."
     )
 
-
-# ---------------------------------------------------------
-# Analysis tab
-# ---------------------------------------------------------
 
 with analysis_tab:
-
     st.subheader("Earthquake Activity Over Time")
 
-
-    timeline_dataframe = filtered_dataframe.copy()
-
-
-    timeline_dataframe["event_time"] = pd.to_datetime(
-        timeline_dataframe["event_time"],
-        utc=True,
-        errors="coerce",
-    )
-
-
-    timeline_dataframe = timeline_dataframe.dropna(
+    timeline_dataframe = filtered_dataframe.dropna(
         subset=["event_time"]
-    )
-
+    ).copy()
 
     timeline_dataframe["event_hour"] = (
         timeline_dataframe["event_time"].dt.floor("h")
     )
-
 
     hourly_activity = (
         timeline_dataframe.groupby(
@@ -444,7 +379,6 @@ with analysis_tab:
         .sort_values("event_hour")
     )
 
-
     timeline_figure = px.line(
         hourly_activity,
         x="event_hour",
@@ -452,31 +386,24 @@ with analysis_tab:
         markers=True,
         labels={
             "event_hour": "Time",
-            "earthquake_count": (
-                "Number of Earthquakes"
-            ),
+            "earthquake_count": "Number of Earthquakes",
         },
         title="Earthquakes Recorded by Hour",
     )
-
 
     timeline_figure.update_layout(
         xaxis_title="Event Time",
         yaxis_title="Earthquake Count",
     )
 
-
     st.plotly_chart(
         timeline_figure,
         use_container_width=True,
     )
 
-
     chart_column_1, chart_column_2 = st.columns(2)
 
-
     with chart_column_1:
-
         st.subheader("Magnitude Distribution")
 
         magnitude_figure = px.histogram(
@@ -490,21 +417,17 @@ with analysis_tab:
             title="Distribution of Earthquake Magnitudes",
         )
 
-
         magnitude_figure.update_layout(
             xaxis_title="Magnitude",
             yaxis_title="Earthquake Count",
         )
-
 
         st.plotly_chart(
             magnitude_figure,
             use_container_width=True,
         )
 
-
     with chart_column_2:
-
         st.subheader("Severity Breakdown")
 
         severity_summary = (
@@ -520,38 +443,31 @@ with analysis_tab:
             )
         )
 
-
         severity_figure = px.bar(
             severity_summary,
             x="severity",
             y="earthquake_count",
             category_orders={
-                "severity": severity_options
+                "severity": severity_order
             },
             labels={
                 "severity": "Severity",
-                "earthquake_count": (
-                    "Number of Earthquakes"
-                ),
+                "earthquake_count": "Number of Earthquakes",
             },
             title="Earthquakes by Severity",
         )
-
 
         severity_figure.update_layout(
             xaxis_title="Severity",
             yaxis_title="Earthquake Count",
         )
 
-
         st.plotly_chart(
             severity_figure,
             use_container_width=True,
         )
 
-
     st.subheader("Magnitude Compared with Depth")
-
 
     depth_figure = px.scatter(
         filtered_dataframe,
@@ -565,7 +481,7 @@ with analysis_tab:
             "longitude": True,
         },
         category_orders={
-            "severity": severity_options
+            "severity": severity_order
         },
         labels={
             "depth_km": "Depth in Kilometers",
@@ -575,15 +491,12 @@ with analysis_tab:
         title="Earthquake Magnitude vs. Depth",
     )
 
-
     st.plotly_chart(
         depth_figure,
         use_container_width=True,
     )
 
-
     st.subheader("Strongest Earthquakes")
-
 
     strongest_earthquakes = (
         filtered_dataframe.sort_values(
@@ -593,7 +506,6 @@ with analysis_tab:
         .head(10)
     )
 
-
     strongest_columns = [
         "event_time",
         "place",
@@ -601,7 +513,6 @@ with analysis_tab:
         "severity",
         "depth_km",
     ]
-
 
     st.dataframe(
         strongest_earthquakes[
@@ -612,14 +523,8 @@ with analysis_tab:
     )
 
 
-# ---------------------------------------------------------
-# Records tab
-# ---------------------------------------------------------
-
 with records_tab:
-
     st.subheader("Filtered Earthquake Records")
-
 
     display_columns = [
         "event_time",
@@ -633,13 +538,11 @@ with records_tab:
         "status",
     ]
 
-
     available_display_columns = [
         column
         for column in display_columns
         if column in filtered_dataframe.columns
     ]
-
 
     st.dataframe(
         filtered_dataframe[
@@ -649,11 +552,9 @@ with records_tab:
         hide_index=True,
     )
 
-
     csv_data = filtered_dataframe.to_csv(
         index=False
     ).encode("utf-8")
-
 
     st.download_button(
         label="Download Filtered Data as CSV",
@@ -662,10 +563,6 @@ with records_tab:
         mime="text/csv",
     )
 
-
-# ---------------------------------------------------------
-# Footer
-# ---------------------------------------------------------
 
 st.divider()
 
