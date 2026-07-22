@@ -1,6 +1,36 @@
-.venv/
+# Python cache
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# VS Code
 .vscode/
-data/*.csv
+
+# Environment variables
 .env
+
+# Generated data
+data/*.csv
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Operating system files
+Thumbs.db
+.DS_Store
