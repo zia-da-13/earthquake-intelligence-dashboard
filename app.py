@@ -10,20 +10,22 @@ from src.charts import (
     create_magnitude_histogram,
     create_severity_chart,
 )
-from src.data_cleaning import create_earthquake_dataframe
+from src.data_cleaning import (
+    classify_magnitude,
+    create_earthquake_dataframe,
+)
 from src.database import (
     DATABASE_PATH,
     get_database_record_count,
     load_earthquakes_from_database,
 )
 from src.earthquake_api import fetch_earthquake_data
-from src.filters import apply_filters, display_sidebar_filters
+from src.filters import (
+    apply_filters,
+    display_sidebar_filters,
+)
 from src.statistics import calculate_summary_statistics
 
-
-# ---------------------------------------------------------
-# Page configuration
-# ---------------------------------------------------------
 
 st.set_page_config(
     page_title="Earthquake Intelligence Dashboard",
@@ -32,49 +34,30 @@ st.set_page_config(
 )
 
 
-# ---------------------------------------------------------
-# Data-loading functions
-# ---------------------------------------------------------
-
 @st.cache_data(ttl=300)
 def load_live_earthquake_data() -> pd.DataFrame:
-    """
-    Retrieve the latest USGS earthquake feed.
-
-    Returns:
-        Cleaned live earthquake records.
-    """
-    earthquake_data = fetch_earthquake_data()
+    """Retrieve and clean the current USGS feed."""
+    raw_earthquake_data = fetch_earthquake_data()
 
     return create_earthquake_dataframe(
-        earthquake_data
+        raw_earthquake_data
     )
 
 
 @st.cache_data(ttl=60)
 def load_historical_earthquake_data() -> pd.DataFrame:
-    """
-    Load accumulated earthquake records from SQLite.
-
-    Returns:
-        Historical earthquake records.
-    """
+    """Load accumulated earthquake records from SQLite."""
     return load_earthquakes_from_database()
 
-
-# ---------------------------------------------------------
-# Validation
-# ---------------------------------------------------------
 
 def prepare_dashboard_data(
     earthquake_dataframe: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Validate and prepare earthquake records for the dashboard.
+    Validate and prepare data for filters and visualizations.
 
     Args:
-        earthquake_dataframe: Earthquake records from an API
-            or SQLite database.
+        earthquake_dataframe: Data from USGS or SQLite.
 
     Returns:
         Validated earthquake records.
@@ -82,14 +65,19 @@ def prepare_dashboard_data(
     if earthquake_dataframe.empty:
         return earthquake_dataframe
 
-    required_numeric_columns = [
+    earthquake_dataframe = (
+        earthquake_dataframe.copy()
+    )
+
+    numeric_columns = [
         "magnitude",
         "depth_km",
         "latitude",
         "longitude",
+        "tsunami_alert",
     ]
 
-    for column in required_numeric_columns:
+    for column in numeric_columns:
         if column not in earthquake_dataframe.columns:
             earthquake_dataframe[column] = pd.NA
 
@@ -97,6 +85,9 @@ def prepare_dashboard_data(
             earthquake_dataframe[column],
             errors="coerce",
         )
+
+    if "event_time" not in earthquake_dataframe.columns:
+        earthquake_dataframe["event_time"] = pd.NaT
 
     earthquake_dataframe["event_time"] = pd.to_datetime(
         earthquake_dataframe["event_time"],
@@ -115,7 +106,9 @@ def prepare_dashboard_data(
     ).copy()
 
     if "place" not in earthquake_dataframe.columns:
-        earthquake_dataframe["place"] = "Unknown location"
+        earthquake_dataframe["place"] = (
+            "Unknown location"
+        )
 
     earthquake_dataframe["place"] = (
         earthquake_dataframe["place"]
@@ -124,27 +117,35 @@ def prepare_dashboard_data(
     )
 
     if "severity" not in earthquake_dataframe.columns:
-        earthquake_dataframe["severity"] = "Unknown"
+        earthquake_dataframe["severity"] = (
+            earthquake_dataframe[
+                "magnitude"
+            ].apply(classify_magnitude)
+        )
 
-    earthquake_dataframe["severity"] = (
-        earthquake_dataframe["severity"]
-        .fillna("Unknown")
-        .astype(str)
-    )
+    else:
+        missing_severity = (
+            earthquake_dataframe["severity"].isna()
+            | earthquake_dataframe[
+                "severity"
+            ].eq("")
+        )
 
-    if "tsunami_alert" not in earthquake_dataframe.columns:
-        earthquake_dataframe["tsunami_alert"] = 0
+        earthquake_dataframe.loc[
+            missing_severity,
+            "severity",
+        ] = earthquake_dataframe.loc[
+            missing_severity,
+            "magnitude",
+        ].apply(classify_magnitude)
 
     earthquake_dataframe["tsunami_alert"] = (
-        pd.to_numeric(
-            earthquake_dataframe["tsunami_alert"],
-            errors="coerce",
-        )
+        earthquake_dataframe["tsunami_alert"]
         .fillna(0)
         .astype(int)
     )
 
-    earthquake_dataframe = (
+    return (
         earthquake_dataframe.sort_values(
             by="event_time",
             ascending=False,
@@ -152,22 +153,11 @@ def prepare_dashboard_data(
         .reset_index(drop=True)
     )
 
-    return earthquake_dataframe
-
-
-# ---------------------------------------------------------
-# Summary metric cards
-# ---------------------------------------------------------
 
 def display_summary_metrics(
     earthquake_dataframe: pd.DataFrame,
 ) -> None:
-    """
-    Display summary metric cards.
-
-    Args:
-        earthquake_dataframe: Filtered earthquake records.
-    """
+    """Display earthquake summary metrics."""
     summary = calculate_summary_statistics(
         earthquake_dataframe
     )
@@ -175,46 +165,38 @@ def display_summary_metrics(
     metric_columns = st.columns(5)
 
     metric_columns[0].metric(
-        label="Total Earthquakes",
-        value=f"{summary['total_earthquakes']:,}",
+        "Total Earthquakes",
+        f"{summary['total_earthquakes']:,}",
     )
 
     metric_columns[1].metric(
-        label="Largest Magnitude",
-        value=f"{summary['largest_magnitude']:.1f}",
+        "Largest Magnitude",
+        f"{summary['largest_magnitude']:.1f}",
     )
 
     metric_columns[2].metric(
-        label="Average Magnitude",
-        value=f"{summary['average_magnitude']:.2f}",
+        "Average Magnitude",
+        f"{summary['average_magnitude']:.2f}",
     )
 
     metric_columns[3].metric(
-        label="Average Depth",
-        value=f"{summary['average_depth']:.1f} km",
+        "Average Depth",
+        f"{summary['average_depth']:.1f} km",
     )
 
     metric_columns[4].metric(
-        label="Tsunami Alerts",
-        value=f"{summary['tsunami_alerts']:,}",
+        "Tsunami Alerts",
+        f"{summary['tsunami_alerts']:,}",
     )
 
-
-# ---------------------------------------------------------
-# Dashboard heading
-# ---------------------------------------------------------
 
 st.title("🌍 Global Earthquake Intelligence Dashboard")
 
 st.caption(
-    "Explore live USGS earthquake activity and locally "
-    "accumulated historical records."
+    "Explore live USGS earthquake activity and "
+    "historical records stored in SQLite."
 )
 
-
-# ---------------------------------------------------------
-# Data-source selection
-# ---------------------------------------------------------
 
 st.sidebar.header("Data Source")
 
@@ -224,25 +206,17 @@ selected_data_source = st.sidebar.selectbox(
         "Live USGS feed",
         "SQLite historical data",
     ],
-    index=0,
 )
 
 
-refresh_data = st.sidebar.button(
+if st.sidebar.button(
     "Refresh selected data",
     type="primary",
     width="stretch",
-)
-
-
-if refresh_data:
+):
     st.cache_data.clear()
     st.rerun()
 
-
-# ---------------------------------------------------------
-# Load selected source
-# ---------------------------------------------------------
 
 try:
     if selected_data_source == "Live USGS feed":
@@ -261,8 +235,8 @@ try:
         )
 
         source_description = (
-            "Displaying all earthquake records currently "
-            "stored in the local SQLite database."
+            "Displaying accumulated earthquake records "
+            "from the local SQLite database."
         )
 
 except Exception as error:
@@ -277,14 +251,12 @@ earthquake_dataframe = prepare_dashboard_data(
 )
 
 
-# ---------------------------------------------------------
-# Handle missing database data
-# ---------------------------------------------------------
-
 if earthquake_dataframe.empty:
-    if selected_data_source == "SQLite historical data":
+    if selected_data_source == (
+        "SQLite historical data"
+    ):
         st.warning(
-            "The SQLite database does not contain any usable "
+            "The SQLite database does not contain usable "
             "earthquake records."
         )
 
@@ -293,52 +265,38 @@ if earthquake_dataframe.empty:
             language="powershell",
         )
 
-        st.info(
-            "Run the data pipeline from the VS Code terminal, "
-            "then select SQLite historical data again."
-        )
-
     else:
         st.warning(
-            "The live USGS feed did not return any usable "
-            "earthquake records."
+            "The live USGS feed did not return usable data."
         )
 
     st.stop()
 
 
-# ---------------------------------------------------------
-# Source information
-# ---------------------------------------------------------
-
 source_column, record_column = st.columns(
     [3, 1]
 )
 
+
 with source_column:
     st.info(source_description)
 
-with record_column:
-    if selected_data_source == "SQLite historical data":
-        stored_record_count = (
-            get_database_record_count()
-        )
 
+with record_column:
+    if selected_data_source == (
+        "SQLite historical data"
+    ):
         st.metric(
-            label="Database Records",
-            value=f"{stored_record_count:,}",
+            "Database Records",
+            f"{get_database_record_count():,}",
         )
 
     else:
         st.metric(
-            label="Live Feed Records",
-            value=f"{len(earthquake_dataframe):,}",
+            "Live Feed Records",
+            f"{len(earthquake_dataframe):,}",
         )
 
-
-# ---------------------------------------------------------
-# Dashboard filters
-# ---------------------------------------------------------
 
 selected_filters = display_sidebar_filters(
     earthquake_dataframe
@@ -350,10 +308,6 @@ filtered_dataframe = apply_filters(
     selected_filters,
 )
 
-
-# ---------------------------------------------------------
-# Summary metrics
-# ---------------------------------------------------------
 
 display_summary_metrics(
     filtered_dataframe
@@ -368,10 +322,6 @@ if filtered_dataframe.empty:
     )
     st.stop()
 
-
-# ---------------------------------------------------------
-# Dataset date range
-# ---------------------------------------------------------
 
 earliest_event = filtered_dataframe[
     "event_time"
@@ -395,88 +345,66 @@ date_column_2.caption(
 )
 
 
-# ---------------------------------------------------------
-# Dashboard tabs
-# ---------------------------------------------------------
-
-map_tab, analysis_tab, records_tab, database_tab = st.tabs(
-    [
-        "🌍 Earthquake Map",
-        "📊 Activity Analysis",
-        "📋 Earthquake Records",
-        "🗄️ Data Information",
-    ]
+map_tab, analysis_tab, records_tab, information_tab = (
+    st.tabs(
+        [
+            "🌍 Earthquake Map",
+            "📊 Activity Analysis",
+            "📋 Earthquake Records",
+            "🗄️ Data Information",
+        ]
+    )
 )
 
-
-# ---------------------------------------------------------
-# Map tab
-# ---------------------------------------------------------
 
 with map_tab:
     st.subheader("Interactive Earthquake Map")
 
-    earthquake_map = create_earthquake_map(
-        filtered_dataframe
-    )
-
     st.plotly_chart(
-        earthquake_map,
+        create_earthquake_map(
+            filtered_dataframe
+        ),
         width="stretch",
     )
 
     st.info(
-        "Marker size represents earthquake magnitude. "
+        "Marker size represents magnitude. "
         "Marker categories represent severity."
     )
 
 
-# ---------------------------------------------------------
-# Analysis tab
-# ---------------------------------------------------------
-
 with analysis_tab:
     st.subheader("Earthquake Activity Over Time")
 
-    activity_timeline = create_activity_timeline(
-        filtered_dataframe
-    )
-
     st.plotly_chart(
-        activity_timeline,
+        create_activity_timeline(
+            filtered_dataframe
+        ),
         width="stretch",
     )
 
     chart_column_1, chart_column_2 = st.columns(2)
 
     with chart_column_1:
-        magnitude_histogram = (
+        st.plotly_chart(
             create_magnitude_histogram(
                 filtered_dataframe
-            )
-        )
-
-        st.plotly_chart(
-            magnitude_histogram,
+            ),
             width="stretch",
         )
 
     with chart_column_2:
-        severity_chart = create_severity_chart(
-            filtered_dataframe
-        )
-
         st.plotly_chart(
-            severity_chart,
+            create_severity_chart(
+                filtered_dataframe
+            ),
             width="stretch",
         )
 
-    depth_scatter = create_depth_scatter(
-        filtered_dataframe
-    )
-
     st.plotly_chart(
-        depth_scatter,
+        create_depth_scatter(
+            filtered_dataframe
+        ),
         width="stretch",
     )
 
@@ -505,31 +433,8 @@ with analysis_tab:
         ],
         width="stretch",
         hide_index=True,
-        column_config={
-            "event_time": st.column_config.DatetimeColumn(
-                "Event Time",
-                format="YYYY-MM-DD HH:mm:ss",
-            ),
-            "place": "Location",
-            "magnitude": st.column_config.NumberColumn(
-                "Magnitude",
-                format="%.1f",
-            ),
-            "severity": "Severity",
-            "depth_km": st.column_config.NumberColumn(
-                "Depth (km)",
-                format="%.1f",
-            ),
-            "tsunami_alert": st.column_config.CheckboxColumn(
-                "Tsunami Alert",
-            ),
-        },
     )
 
-
-# ---------------------------------------------------------
-# Records tab
-# ---------------------------------------------------------
 
 with records_tab:
     st.subheader("Filtered Earthquake Records")
@@ -547,14 +452,14 @@ with records_tab:
         "details_url",
     ]
 
-    available_display_columns = [
+    available_columns = [
         column
         for column in display_columns
         if column in filtered_dataframe.columns
     ]
 
     records_dataframe = filtered_dataframe[
-        available_display_columns
+        available_columns
     ].copy()
 
     st.dataframe(
@@ -562,34 +467,47 @@ with records_tab:
         width="stretch",
         hide_index=True,
         column_config={
-            "event_time": st.column_config.DatetimeColumn(
-                "Event Time",
-                format="YYYY-MM-DD HH:mm:ss",
+            "event_time": (
+                st.column_config.DatetimeColumn(
+                    "Event Time",
+                    format="YYYY-MM-DD HH:mm:ss",
+                )
             ),
             "place": "Location",
-            "magnitude": st.column_config.NumberColumn(
-                "Magnitude",
-                format="%.1f",
+            "magnitude": (
+                st.column_config.NumberColumn(
+                    "Magnitude",
+                    format="%.1f",
+                )
             ),
-            "severity": "Severity",
-            "depth_km": st.column_config.NumberColumn(
-                "Depth (km)",
-                format="%.1f",
+            "depth_km": (
+                st.column_config.NumberColumn(
+                    "Depth (km)",
+                    format="%.1f",
+                )
             ),
-            "latitude": st.column_config.NumberColumn(
-                "Latitude",
-                format="%.3f",
+            "latitude": (
+                st.column_config.NumberColumn(
+                    "Latitude",
+                    format="%.3f",
+                )
             ),
-            "longitude": st.column_config.NumberColumn(
-                "Longitude",
-                format="%.3f",
+            "longitude": (
+                st.column_config.NumberColumn(
+                    "Longitude",
+                    format="%.3f",
+                )
             ),
-            "tsunami_alert": st.column_config.CheckboxColumn(
-                "Tsunami Alert",
+            "tsunami_alert": (
+                st.column_config.CheckboxColumn(
+                    "Tsunami Alert",
+                )
             ),
-            "details_url": st.column_config.LinkColumn(
-                "USGS Details",
-                display_text="Open event",
+            "details_url": (
+                st.column_config.LinkColumn(
+                    "USGS Details",
+                    display_text="Open event",
+                )
             ),
         },
     )
@@ -598,28 +516,24 @@ with records_tab:
         index=False
     ).encode("utf-8")
 
-    source_filename = (
+    filename_prefix = (
         "live"
         if selected_data_source == "Live USGS feed"
         else "historical"
     )
 
     st.download_button(
-        label="Download Filtered Data as CSV",
+        "Download Filtered Data as CSV",
         data=csv_data,
         file_name=(
-            f"{source_filename}_filtered_earthquakes.csv"
+            f"{filename_prefix}_earthquakes.csv"
         ),
         mime="text/csv",
         type="primary",
     )
 
 
-# ---------------------------------------------------------
-# Database information tab
-# ---------------------------------------------------------
-
-with database_tab:
+with information_tab:
     st.subheader("Data Source Information")
 
     information_column_1, information_column_2 = (
@@ -627,24 +541,22 @@ with database_tab:
     )
 
     with information_column_1:
-        st.markdown("#### Selected source")
+        st.markdown("#### Selected dataset")
 
         st.write(selected_data_source)
 
         st.metric(
-            label="Loaded Records",
-            value=f"{len(earthquake_dataframe):,}",
+            "Loaded Records",
+            f"{len(earthquake_dataframe):,}",
         )
 
         st.metric(
-            label="Filtered Records",
-            value=f"{len(filtered_dataframe):,}",
+            "Filtered Records",
+            f"{len(filtered_dataframe):,}",
         )
 
     with information_column_2:
-        st.markdown("#### SQLite storage")
-
-        database_exists = DATABASE_PATH.exists()
+        st.markdown("#### SQLite database")
 
         st.write(
             f"Database path: `{DATABASE_PATH}`"
@@ -654,21 +566,21 @@ with database_tab:
             "Database status: "
             + (
                 "Available"
-                if database_exists
+                if DATABASE_PATH.exists()
                 else "Not created"
             )
         )
 
         st.metric(
-            label="Stored Database Records",
-            value=f"{get_database_record_count():,}",
+            "Stored Database Records",
+            f"{get_database_record_count():,}",
         )
 
-    st.markdown("#### Update historical data")
+    st.markdown("#### Update historical records")
 
     st.write(
-        "Run the following command periodically to retrieve "
-        "the current feed and add new records to SQLite:"
+        "Run this command periodically to retrieve "
+        "new earthquake records:"
     )
 
     st.code(
@@ -676,15 +588,6 @@ with database_tab:
         language="powershell",
     )
 
-    st.write(
-        "The database uses the USGS earthquake ID as its "
-        "primary key, preventing duplicate records."
-    )
-
-
-# ---------------------------------------------------------
-# Footer
-# ---------------------------------------------------------
 
 st.divider()
 
